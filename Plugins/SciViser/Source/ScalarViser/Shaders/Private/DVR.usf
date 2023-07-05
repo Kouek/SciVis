@@ -1,0 +1,22 @@
+#include "RayCast.usf"
+
+float4 DirectVolumeRender(FMaterialPixelParameters Parameters, Texture3D Volume, Texture2D TF, int MaxStepCount)
+{
+    RayCastResult result = RayCast(Parameters);
+    float step = result.entry2Exit / MaxStepCount;
+    
+    float4 accuCol = float4(0, 0, 0, 0);
+    float3 pos = result.entryPos;
+    float3 dPos = step * result.rayDir;
+    for (int stepCnt = 0; stepCnt <= MaxStepCount; ++stepCnt)
+    {
+        float scalar = Volume.SampleLevel(Material.Clamp_WorldGroupSettings, pos, 0);
+        float4 col = TF.SampleLevel(Material.Clamp_WorldGroupSettings, float2(scalar, .5f), 0);
+
+        accuCol.rgb = accuCol.rgb + (1.f - accuCol.a) * col.a * col.rgb;
+        accuCol.a = accuCol.a + (1.f - accuCol.a) * col.a;
+        pos += dPos;
+    }
+
+    return accuCol;
+}

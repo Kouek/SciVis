@@ -1,0 +1,81 @@
+float2 RayAABBIntersection(float3 RayOrigin, float3 RayDir, float3 BoxMin, float3 BoxMax)
+{
+	// Get inverse ray direction, used to determine the order of axis intersects.
+    float3 invRayDir = 1.f / RayDir;
+
+	// TimeToAxisMins will have the distance travelled along the ray in X,Y,Z when it reaches BoxMin on the respective axis.
+	// e.g. timeToAxisMin.x will have the distance travelled along the ray reaches BoxMin.x, timeToAxisMin.y the distance to
+	// crossing BoxMin.y, etc. These distances be negative if that axis is crossed "behind" the origin.
+    float3 timeToAxisMin = (BoxMin - RayOrigin) * invRayDir;
+	// TimeToAxisMaxes  will have the distance travelled along the ray in X,Y,Z when it reaches BoxMax on the respective axis.
+    float3 timeToAxisMax = (BoxMax - RayOrigin) * invRayDir;
+
+	// Get closest and furthest intersections
+    float3 nearestIntersections = min(timeToAxisMax, timeToAxisMin);
+    float3 furthestIntersections = max(timeToAxisMax, timeToAxisMin);
+
+	// The actual intersections of the box are the 2 values in the middle of the pack.
+	// T0 (entry) = the farthest of the closest intersections
+    const float t0 = max(nearestIntersections.x, max(nearestIntersections.y, nearestIntersections.z));
+	// T1 (exit) = the closest of the furthest intersections
+    const float t1 = min(furthestIntersections.x, min(furthestIntersections.y, furthestIntersections.z));
+    return float2(t0, t1);
+}
+
+struct RayCastResult
+{
+    float3 entryPos;
+    float entry2Exit;
+    float3 rayDir;
+};
+
+RayCastResult RayCast(FMaterialPixelParameters MaterialParameters)
+{
+    RayCastResult ret;
+    
+    // Get scene depth at this pixel.
+    float localSceneDepth = CalcSceneDepth(ScreenAlignedPosition(GetScreenPosition(MaterialParameters)));
+    
+    // Get camera forward vector in world space.
+    float3 cameraFWDVecWorld = mul(float3(0.f, 0.f, 1.f), ResolvedView.ViewToTranslatedWorld);
+
+    // Get world space vector going from camera center to current scene depth.
+    float3 worldDepthVec = normalize(MaterialParameters.CameraVector) * localSceneDepth;
+
+    // Transform this vector into the box's local space
+    worldDepthVec = mul(worldDepthVec, LWCHackToFloat(GetPrimitiveData(MaterialParameters).WorldToLocal));
+
+    // Get actual depth in local space, account for mesh bounds (by default, we use a centered 1x1x1 cube mesh, so this is unnecessary)
+    localSceneDepth = length(worldDepthVec);
+    
+    // We use unit cubes now, uncomment this if you want to use non-unit meshes for some reason.
+    localSceneDepth /= (GetPrimitiveData(MaterialParameters).LocalObjectBoundsMax.x * 2);
+
+    // Account for difference between camera center vector and camera-to-pixel depth
+    localSceneDepth /= abs(dot(cameraFWDVecWorld, MaterialParameters.CameraVector));
+
+    // Get cam pos and vector into local space too.
+    ret.entryPos = mul(float4(LWCHackToFloat(ResolvedView.WorldCameraOrigin), 1.f), LWCHackToFloat(GetPrimitiveData(MaterialParameters).WorldToLocal)).xyz;
+    ret.rayDir = -normalize(mul(MaterialParameters.CameraVector, LWCHackToFloat(GetPrimitiveData(MaterialParameters).WorldToLocal)));
+
+    // Transform camera pos from object-local to UVW coords (from +-0.5 to [0 - 1]).
+    ret.entryPos /= (GetPrimitiveData(MaterialParameters).LocalObjectBoundsMax.x * 2);
+    ret.entryPos += .5f;
+
+	// Get times (or distances from localCamPos along localCamVec) to the box entry and exit.
+    float2 entryExitTimes = RayAABBIntersection(ret.entryPos, ret.rayDir, 0, 1);
+	
+    // Make sure the entry point is not behind the camera
+    entryExitTimes.x = max(0, entryExitTimes.x);
+
+    // Make sure the exit point is not behind other scene geometry.
+    entryExitTimes.y = min(localSceneDepth, entryExitTimes.y);
+
+    // Calculate box thickness at this pixel (in local space).
+    ret.entry2Exit = max(0, entryExitTimes.y - entryExitTimes.x);
+
+    // Get entry position in UVW space.
+    ret.entryPos = ret.entryPos + entryExitTimes.x * ret.rayDir;
+    
+    return ret;
+}
